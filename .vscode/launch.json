@@ -7,6 +7,14 @@
         {
             "type": "lldb",
             "request": "launch",
+            "name": "Debug screen",
+            "program": "${workspaceFolder}/target/debug/screen",
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
             "name": "Debug",
             "preLaunchTask": "compile",
             "program": "C:/Ruby31-x64/bin/ruby",
@@ -18,6 +26,6 @@
             "sourceLanguages": [
                 "rust"
             ]
-        }
+        },
     ]
 }

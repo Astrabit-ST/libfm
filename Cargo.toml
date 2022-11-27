@@ -1,2 +1,3 @@
 [workspace]
-members = ["ext/libfm"]
+members = ["ext/libfm", "ext/screen"]
+resolver = "2"

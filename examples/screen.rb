@@ -15,3 +15,18 @@
 # You should have received a copy of the GNU General Public License
 # along with libfm.  If not, see <http://www.gnu.org/licenses/>.
 
+require "libfm"
+
+s = LibFM::Screen.new
+s.set "examples/two_83c.png"
+s.visible true
+
+t = 0
+loop do
+    t += 0.05
+    s.move(
+        Math.sin(t) * 640 + 1280 - 640,
+        Math.cos(t) * 480 + 720 - 240
+    )
+    sleep(1.0 / 60.0)
+end
