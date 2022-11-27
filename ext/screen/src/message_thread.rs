@@ -40,7 +40,6 @@ pub fn message_thread(window: Arc<Window>, image_sender: Sender<DynamicImage>) {
 
             match message {
                 Message::Picture(image) => {
-                    eprintln!("Loading {image}");
                     let image = image::load_from_memory(&std::fs::read(image).unwrap()).unwrap();
                     image_sender.send(image).unwrap();
                 }

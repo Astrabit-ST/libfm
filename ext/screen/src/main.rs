@@ -36,7 +36,7 @@ fn main() {
         .with_decorations(false)
         .with_visible(false)
         .with_position(PhysicalPosition::new(0, 0))
-        .with_inner_size(PhysicalSize::new(480, 480))
+        .with_inner_size(PhysicalSize::new(96, 96))
         .with_resizable(false);
 
     #[cfg(target_os = "windows")]
@@ -112,7 +112,9 @@ fn main() {
         message_thread::message_thread(window, image_sender);
     });
 
-    event_loop.run(move |event, _, _| {
+    event_loop.run(move |event, _, control_flow| {
+        control_flow.set_poll();
+
         if let Ok(image) = image_reciever.try_recv() {
             let size = PhysicalSize::new(image.width(), image.height());
             window.set_inner_size(size);
@@ -262,7 +264,7 @@ impl Renderer {
         let Self { program, vao, .. } = *self;
         let gl = &mut self.gl;
 
-        gl.clear_color(0.1, 0.1, 0.1, 0.1);
+        gl.clear_color(0.0, 0.0, 0.0, 0.0);
         gl.clear(glow::COLOR_BUFFER_BIT);
 
         gl.use_program(Some(program));
@@ -280,6 +282,8 @@ impl Renderer {
         use glow::HasContext;
         let gl = &mut self.gl;
 
+        gl.viewport(0, 0, image.width() as _, image.height() as _);
+
         if let Some(tex) = self.texture.take() {
             gl.delete_texture(tex);
         }
@@ -287,6 +291,16 @@ impl Renderer {
         let image = image.flipv();
         let texture = gl.create_texture().unwrap();
         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_T,
+            glow::CLAMP_TO_EDGE as _,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_S,
+            glow::CLAMP_TO_EDGE as _,
+        );
         gl.tex_image_2d(
             glow::TEXTURE_2D,
             0,

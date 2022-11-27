@@ -20,13 +20,36 @@ require "libfm"
 s = LibFM::Screen.new
 s.set "examples/two_83c.png"
 s.visible true
+s.decoration true
+s.title "TWO Good for you"
+
+s2 = LibFM::Screen.new
+s2.set "examples/alula_gasp.png"
+s2.visible true
+
+alula = true
 
 t = 0
 loop do
-    t += 0.05
+    t += 1
     s.move(
-        Math.sin(t) * 640 + 1280 - 640,
-        Math.cos(t) * 480 + 720 - 240
+        Math.sin(t / 30.0) * 640 + 1280 - 640,
+        Math.cos(t / 30.0) * 480 + 720 - 240
     )
-    sleep(1.0 / 60.0)
+    s2.move(
+        Math.sin(-t / 30.0) * 640 + 1280 - 640,
+        Math.cos(-t / 30.0) * 480 + 720 - 240 
+    )
+
+    if t % 240 == 0
+        alula = !alula
+        if alula
+            s2.set "examples/alula_gasp.png"
+        else
+            s2.set "examples/niko_dizzy.png"
+        end
+        s.decoration alula
+    end
+    
+    sleep(1.0 / 120.0)
 end
