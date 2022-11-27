@@ -2,6 +2,7 @@ PATH
   remote: .
   specs:
     libfm (0.1.0)
+      rb_sys (~> 0.9.37)
 
 GEM
   remote: https://rubygems.org/
@@ -18,6 +19,7 @@ GEM
     rake (13.0.6)
     rake-compiler (1.2.0)
       rake
+    rb_sys (0.9.44)
     regexp_parser (2.6.1)
     rexml (3.2.5)
     rspec (3.12.0)
