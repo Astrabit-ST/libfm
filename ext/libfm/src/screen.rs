@@ -36,7 +36,7 @@ impl Drop for Screen {
 
 impl Screen {
     fn new() -> Self {
-        let popen = Exec::cmd("target/debug/screen")
+        let popen = Exec::cmd("lib/screen")
             .stdin(Redirection::Pipe)
             .stdout(Redirection::Pipe)
             .popen()
