@@ -14,12 +14,12 @@ use glutin::{
 use glutin_winit::DisplayBuilder;
 use image::DynamicImage;
 use raw_window_handle::HasRawWindowHandle;
-use std::{ffi::CString, mem::size_of, num::NonZeroU32, sync::Arc};
+use std::{ffi::CString, mem::size_of, num::NonZeroU32};
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
     event::{Event, WindowEvent},
-    event_loop::EventLoop,
-    window::WindowBuilder,
+    event_loop::EventLoopBuilder,
+    window::{Icon, WindowBuilder},
 };
 
 use bytemuck::cast_slice;
@@ -27,8 +27,19 @@ use bytemuck::cast_slice;
 #[cfg(target_os = "windows")]
 use winit::platform::windows::WindowBuilderExtWindows;
 
+#[derive(Debug)]
+pub enum CustomEvent {
+    ChangeImage(DynamicImage),
+    Move(PhysicalPosition<i32>),
+    GetPosition,
+    Title(String),
+    Decoration(bool),
+    Icon(Option<Icon>),
+    Visible(bool),
+}
+
 fn main() {
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoopBuilder::with_user_event().build();
 
     let window_builder = WindowBuilder::new()
         .with_transparent(true)
@@ -63,7 +74,7 @@ fn main() {
         })
         .unwrap();
 
-    let window = Arc::new(window.unwrap());
+    let window = window.unwrap();
 
     let surface = unsafe {
         {
@@ -104,31 +115,13 @@ fn main() {
 
     let mut renderer = unsafe { Renderer::new(gl) };
 
-    let window_clone = window.clone();
-    let (image_sender, image_reciever) = crossbeam_channel::bounded(1);
+    let proxy = event_loop.create_proxy();
     std::thread::spawn(move || {
-        let window = window_clone;
-
-        message_thread::message_thread(window, image_sender);
+        message_thread::message_thread(proxy);
     });
 
     event_loop.run(move |event, _, control_flow| {
         control_flow.set_poll();
-
-        if let Ok(image) = image_reciever.try_recv() {
-            let size = PhysicalSize::new(image.width(), image.height());
-            window.set_inner_size(size);
-
-            surface.resize(
-                &glutin_context,
-                NonZeroU32::new(image.width()).unwrap(),
-                NonZeroU32::new(image.height()).unwrap(),
-            );
-
-            unsafe {
-                renderer.load_texture(image);
-            }
-        }
 
         match event {
             Event::WindowEvent {
@@ -153,6 +146,32 @@ fn main() {
                 // request it.
                 window.request_redraw();
             }
+            Event::UserEvent(event) => match event {
+                CustomEvent::ChangeImage(image) => {
+                    let size = PhysicalSize::new(image.width(), image.height());
+                    window.set_inner_size(size);
+
+                    surface.resize(
+                        &glutin_context,
+                        NonZeroU32::new(image.width()).unwrap(),
+                        NonZeroU32::new(image.height()).unwrap(),
+                    );
+
+                    unsafe {
+                        renderer.load_texture(image);
+                    }
+                }
+                CustomEvent::Move(pos) => window.set_outer_position(pos),
+                CustomEvent::GetPosition => {
+                    let position = window.outer_position().unwrap();
+
+                    println!("{}", ron::to_string(&(position.x, position.y)).unwrap());
+                }
+                CustomEvent::Title(title) => window.set_title(&title),
+                CustomEvent::Decoration(deco) => window.set_decorations(deco),
+                CustomEvent::Icon(icon) => window.set_window_icon(icon),
+                CustomEvent::Visible(visible) => window.set_visible(visible),
+            },
             _ => {}
         }
     })

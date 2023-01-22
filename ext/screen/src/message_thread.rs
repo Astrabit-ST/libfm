@@ -15,12 +15,10 @@
 // You should have received a copy of the GNU General Public License
 // along with libfm.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
-
-use crossbeam_channel::Sender;
-use image::DynamicImage;
 use serde::{Deserialize, Serialize};
-use winit::window::Window;
+use winit::event_loop::EventLoopProxy;
+
+use crate::CustomEvent;
 
 #[derive(Serialize, Deserialize)]
 enum Message {
@@ -33,7 +31,7 @@ enum Message {
     Visible(bool),
 }
 
-pub fn message_thread(window: Arc<Window>, image_sender: Sender<DynamicImage>) {
+pub fn message_thread(proxy: EventLoopProxy<CustomEvent>) {
     loop {
         for line in std::io::stdin().lines() {
             let message: Message = ron::from_str(&line.unwrap()).unwrap();
@@ -41,18 +39,25 @@ pub fn message_thread(window: Arc<Window>, image_sender: Sender<DynamicImage>) {
             match message {
                 Message::Picture(image) => {
                     let image = image::load_from_memory(&std::fs::read(image).unwrap()).unwrap();
-                    image_sender.send(image).unwrap();
+
+                    proxy.send_event(CustomEvent::ChangeImage(image)).unwrap();
                 }
                 Message::Position(x, y) => {
-                    window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y))
+                    proxy
+                        .send_event(CustomEvent::Move(winit::dpi::PhysicalPosition::new(x, y)))
+                        .unwrap();
                 }
                 Message::RetrievePosition => {
-                    let position = window.outer_position().unwrap();
-
-                    println!("{}", ron::to_string(&(position.x, position.y)).unwrap());
+                    proxy.send_event(CustomEvent::GetPosition).unwrap();
                 }
-                Message::Title(title) => window.set_title(&title),
-                Message::Decoration(decoration) => window.set_decorations(decoration),
+                Message::Title(title) => {
+                    proxy.send_event(CustomEvent::Title(title)).unwrap();
+                }
+                Message::Decoration(decoration) => {
+                    proxy
+                        .send_event(CustomEvent::Decoration(decoration))
+                        .unwrap();
+                }
                 Message::Icon(icon) => {
                     let icon = icon.map(|s| {
                         let icon = image::load_from_memory(&std::fs::read(s).unwrap()).unwrap();
@@ -63,10 +68,10 @@ pub fn message_thread(window: Arc<Window>, image_sender: Sender<DynamicImage>) {
                         winit::window::Icon::from_rgba(icon.into_bytes(), width, height).unwrap()
                     });
 
-                    window.set_window_icon(icon)
+                    proxy.send_event(CustomEvent::Icon(icon)).unwrap();
                 }
                 Message::Visible(visible) => {
-                    window.set_visible(visible);
+                    proxy.send_event(CustomEvent::Visible(visible)).unwrap();
                 }
             }
         }

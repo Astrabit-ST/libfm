@@ -35,10 +35,11 @@ impl Drop for Screen {
 }
 
 impl Screen {
-    fn new() -> Self {
-        let popen = Exec::cmd("lib/screen")
+    fn new(screen_path: String) -> Self {
+        let popen = Exec::cmd(screen_path)
             .stdin(Redirection::Pipe)
             .stdout(Redirection::Pipe)
+            .stderr(Redirection::Pipe)
             .popen()
             .unwrap()
             .into();
@@ -115,7 +116,7 @@ enum Message {
 
 pub fn bind(module: impl magnus::Module) -> Result<(), magnus::Error> {
     let class = module.define_class("Screen", Default::default())?;
-    class.define_singleton_method("new", function!(Screen::new, 0))?;
+    class.define_singleton_method("new", function!(Screen::new, 1))?;
     class.define_method("active", method!(Screen::active, 0))?;
     class.define_method("stop", method!(Screen::stop, 0))?;
     class.define_method("visible", method!(Screen::visible, 1))?;
