@@ -1,28 +1,16 @@
 #![warn(rust_2018_idioms, clippy::all)]
-#![feature(buf_read_has_data_left)]
 
 mod message_thread;
 
-use glow::{NativeProgram, NativeVertexArray};
-use glutin::{
-    config::ConfigTemplateBuilder,
-    context::ContextAttributesBuilder,
-    display::GetGlDisplay,
-    prelude::*,
-    surface::{SurfaceAttributesBuilder, WindowSurface},
-};
-use glutin_winit::DisplayBuilder;
 use image::DynamicImage;
-use raw_window_handle::HasRawWindowHandle;
-use std::{ffi::CString, mem::size_of, num::NonZeroU32};
+use wgpu::util::DeviceExt;
+
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
     event::{Event, WindowEvent},
     event_loop::EventLoopBuilder,
     window::{Icon, WindowBuilder},
 };
-
-use bytemuck::cast_slice;
 
 #[cfg(target_os = "windows")]
 use winit::platform::windows::WindowBuilderExtWindows;
@@ -51,69 +39,12 @@ fn main() {
         .with_resizable(false);
 
     #[cfg(target_os = "windows")]
-    let window_builder = window_builder.with_skip_taskbar(true);
-
-    let template = ConfigTemplateBuilder::new().with_alpha_size(8);
-
-    let display_builder = DisplayBuilder::new().with_window_builder(Some(window_builder));
-
-    let (window, gl_config) = display_builder
-        .build(&event_loop, template, |configs| {
-            configs
-                .reduce(|accum, config| {
-                    let transparency_check = config.supports_transparency().unwrap_or(false)
-                        & !accum.supports_transparency().unwrap_or(false);
-
-                    if transparency_check || config.num_samples() > accum.num_samples() {
-                        config
-                    } else {
-                        accum
-                    }
-                })
-                .unwrap()
-        })
+    let window = window_builder
+        .with_skip_taskbar(true)
+        .build(&event_loop)
         .unwrap();
 
-    let window = window.unwrap();
-
-    let surface = unsafe {
-        {
-            let (width, height): (u32, u32) = window.inner_size().into();
-            let raw_window_handle = window.raw_window_handle();
-            let attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
-                raw_window_handle,
-                NonZeroU32::new(width).unwrap(),
-                NonZeroU32::new(height).unwrap(),
-            );
-
-            gl_config
-                .display()
-                .create_window_surface(&gl_config, &attrs)
-                .unwrap()
-        }
-    };
-
-    let gl_display = gl_config.display();
-
-    let (glutin_context, gl) = unsafe {
-        let context = gl_display
-            .create_context(
-                &gl_config,
-                &ContextAttributesBuilder::new().build(Some(window.raw_window_handle())),
-            )
-            .unwrap();
-
-        let context = context.make_current(&surface).unwrap();
-
-        let gl = glow::Context::from_loader_function(|sym| {
-            let sym = CString::new(sym).unwrap();
-            gl_display.get_proc_address(&sym)
-        });
-
-        (context, gl)
-    };
-
-    let mut renderer = unsafe { Renderer::new(gl) };
+    let mut renderer = pollster::block_on(Renderer::new(&window));
 
     let proxy = event_loop.create_proxy();
     std::thread::spawn(move || {
@@ -129,18 +60,26 @@ fn main() {
                 window_id,
             } => {
                 if window_id == window.id() {
-                    match event {
-                        WindowEvent::Resized(_physical_size) => {}
+                    match *event {
+                        WindowEvent::Resized(physical_size) => renderer.resize(physical_size),
                         WindowEvent::ScaleFactorChanged { .. } => {}
                         _ => {}
                     }
                 }
             }
-            Event::RedrawRequested(window_id) if window_id == window.id() => unsafe {
-                renderer.redraw();
-
-                surface.swap_buffers(&glutin_context).unwrap();
-            },
+            Event::RedrawRequested(window_id) if window_id == window.id() => {
+                match renderer.render() {
+                    Ok(_) => {}
+                    // Reconfigure the surface if lost
+                    Err(wgpu::SurfaceError::Lost) => renderer.resize(renderer.size),
+                    // The system is out of memory, we should probably quit
+                    Err(wgpu::SurfaceError::OutOfMemory) => {
+                        *control_flow = winit::event_loop::ControlFlow::ExitWithCode(1);
+                    }
+                    // All other errors (Outdated, Timeout) should be resolved by the next frame
+                    Err(e) => eprintln!("{:?}", e),
+                }
+            }
             Event::MainEventsCleared => {
                 // RedrawRequested will only trigger once, unless we manually
                 // request it.
@@ -150,16 +89,9 @@ fn main() {
                 CustomEvent::ChangeImage(image) => {
                     let size = PhysicalSize::new(image.width(), image.height());
                     window.set_inner_size(size);
+                    renderer.resize(size);
 
-                    surface.resize(
-                        &glutin_context,
-                        NonZeroU32::new(image.width()).unwrap(),
-                        NonZeroU32::new(image.height()).unwrap(),
-                    );
-
-                    unsafe {
-                        renderer.load_texture(image);
-                    }
+                    renderer.load_texture(image);
                 }
                 CustomEvent::Move(pos) => window.set_outer_position(pos),
                 CustomEvent::GetPosition => {
@@ -179,160 +111,346 @@ fn main() {
 
 #[allow(dead_code)]
 struct Renderer {
-    gl: glow::Context,
-    program: NativeProgram,
-    vao: NativeVertexArray,
-    texture: Option<glow::NativeTexture>,
+    surface: wgpu::Surface,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    size: winit::dpi::PhysicalSize<u32>,
+
+    pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+
+    texture_bind_group: Option<wgpu::BindGroup>,
+    texture_bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+struct Vertex {
+    position: [f32; 3],
+    tex_coords: [f32; 2], // NEW!
+}
+
+unsafe impl bytemuck::Pod for Vertex {}
+unsafe impl bytemuck::Zeroable for Vertex {}
+
+const VERTICES: &[Vertex] = &[
+    // Changed
+    Vertex {
+        position: [-1.0, 1.0, 0.0],
+        tex_coords: [0.0, 0.0],
+    }, // A
+    Vertex {
+        position: [-1.0, -1.0, 0.0],
+        tex_coords: [0.0, 1.0],
+    }, // B
+    Vertex {
+        position: [1.0, -1.0, 0.0],
+        tex_coords: [1.0, 1.0],
+    }, // C
+    Vertex {
+        position: [1.0, 1.0, 0.0],
+        tex_coords: [1.0, 0.0],
+    }, // D
+];
+
+const INDICES: &[u16] = &[0, 1, 3, 1, 2, 3];
+
+impl Vertex {
+    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+            ],
+        }
+    }
 }
 
 impl Renderer {
-    unsafe fn new(gl: glow::Context) -> Self {
-        use glow::HasContext;
+    async fn new(window: &winit::window::Window) -> Self {
+        let size = window.inner_size();
 
-        const VERTICIES: &[f32] = &[
-            // vertex     | texture
-            1.0, 1.0, 0.0, 1.0, 1.0, // top right
-            1.0, -1.0, 0.0, 1.0, 0.0, // bottom right
-            -1.0, -1.0, 0.0, 0.0, 0.0, // bottom left
-            -1.0, 1.0, 0.0, 0.0, 1.0, // top left
-        ];
-        const INDICES: &[u32] = &[
-            0, 1, 3, // first triangle
-            1, 2, 3, // second triangle
-        ];
+        let instance = wgpu::Instance::new(wgpu::Backends::all());
 
-        let vao = gl.create_vertex_array().unwrap();
-        gl.bind_vertex_array(Some(vao));
+        let surface = unsafe { instance.create_surface(window) };
 
-        let vbo = gl.create_buffer().unwrap();
-        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, cast_slice(VERTICIES), glow::STATIC_DRAW);
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .unwrap();
 
-        let ebo = gl.create_buffer().unwrap();
-        gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ebo));
-        gl.buffer_data_u8_slice(
-            glow::ELEMENT_ARRAY_BUFFER,
-            cast_slice(INDICES),
-            glow::STATIC_DRAW,
-        );
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    features: wgpu::Features::empty(),
+                    limits: wgpu::Limits::default(),
+                    label: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
 
-        let vert_contents = "
-        #version 330 core
-        layout (location = 0) in vec3 aPos;
-        layout (location = 1) in vec2 aTexCoord;
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface.get_supported_formats(&adapter)[0],
+            width: size.width,
+            height: size.height,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+        };
+        surface.configure(&device, &config);
 
-        out vec2 TexCoord;
-        
-        void main()
-        {
-            gl_Position = vec4(aPos, 1.0);
-            TexCoord = aTexCoord;
-        }";
-        let vert = gl.create_shader(glow::VERTEX_SHADER).unwrap();
-        gl.shader_source(vert, vert_contents);
-        gl.compile_shader(vert);
+        let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
-        let frag_contents = "
-        #version 330 core
-        out vec4 FragColor;
-          
-        in vec2 TexCoord;
-        
-        uniform sampler2D ourTexture;
-        
-        void main()
-        {
-            FragColor = texture(ourTexture, TexCoord);
-        }";
-        let frag = gl.create_shader(glow::FRAGMENT_SHADER).unwrap();
-        gl.shader_source(frag, frag_contents);
-        gl.compile_shader(frag);
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        // This should match the filterable field of the
+                        // corresponding Texture entry above.
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+                label: Some("texture_bind_group_layout"),
+            });
 
-        let program = gl.create_program().unwrap();
-        gl.attach_shader(program, vert);
-        gl.attach_shader(program, frag);
-        gl.link_program(program);
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
 
-        gl.delete_shader(vert);
-        gl.delete_shader(frag);
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Render Pipeline Layout"),
+            bind_group_layouts: &[&texture_bind_group_layout],
+            push_constant_ranges: &[],
+        });
 
-        gl.use_program(Some(program));
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Render Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[Vertex::desc()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                // 3.
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    // 4.
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList, // 1.
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw, // 2.
+                cull_mode: Some(wgpu::Face::Back),
+                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
+                polygon_mode: wgpu::PolygonMode::Fill,
+                // Requires Features::DEPTH_CLIP_CONTROL
+                unclipped_depth: false,
+                // Requires Features::CONSERVATIVE_RASTERIZATION
+                conservative: false,
+            },
+            depth_stencil: None, // 1.
+            multisample: wgpu::MultisampleState {
+                count: 1,                         // 2.
+                mask: !0,                         // 3.
+                alpha_to_coverage_enabled: false, // 4.
+            },
+            multiview: None, // 5.
+        });
 
-        gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, (size_of::<f32>() * 5) as _, 0);
-        gl.enable_vertex_attrib_array(0);
-        gl.vertex_attrib_pointer_f32(
-            1,
-            2,
-            glow::FLOAT,
-            false,
-            (size_of::<f32>() * 5) as _,
-            (size_of::<f32>() * 3) as _,
-        );
-        gl.enable_vertex_attrib_array(1);
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(INDICES),
+            usage: wgpu::BufferUsages::INDEX,
+        });
 
         Self {
-            gl,
-            program,
-            vao,
-            texture: None,
+            surface,
+            device,
+            queue,
+            config,
+            size,
+
+            texture_bind_group: None,
+            texture_bind_group_layout,
+            sampler,
+
+            pipeline,
+            vertex_buffer,
+            index_buffer,
         }
     }
 
-    unsafe fn redraw(&mut self) {
-        use glow::HasContext;
-        let Self { program, vao, .. } = *self;
-        let gl = &mut self.gl;
-
-        gl.clear_color(0.0, 0.0, 0.0, 0.0);
-        gl.clear(glow::COLOR_BUFFER_BIT);
-
-        gl.use_program(Some(program));
-        gl.bind_vertex_array(Some(vao));
-
-        if let Some(texture) = self.texture {
-            gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+        if new_size.width > 0 && new_size.height > 0 {
+            self.size = new_size;
+            self.config.width = new_size.width;
+            self.config.height = new_size.height;
+            self.surface.configure(&self.device, &self.config);
         }
-
-        gl.draw_elements(glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0);
     }
 
-    unsafe fn load_texture(&mut self, image: DynamicImage) {
-        use glow::HasContext;
-        let gl = &mut self.gl;
+    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        let output = self.surface.get_current_texture()?;
 
-        gl.viewport(0, 0, image.width() as _, image.height() as _);
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
-        if let Some(tex) = self.texture.take() {
-            gl.delete_texture(tex);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }),
+                        store: true,
+                    },
+                })],
+                depth_stencil_attachment: None,
+            });
+
+            render_pass.set_pipeline(&self.pipeline);
+
+            if let Some(ref texture_bind_group) = self.texture_bind_group {
+                render_pass.set_bind_group(0, texture_bind_group, &[])
+            }
+
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16); // 1.
+            render_pass.draw_indexed(0..(INDICES.len() as _), 0, 0..1); // 2.
         }
 
-        let image = image.flipv();
-        let texture = gl.create_texture().unwrap();
-        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_T,
-            glow::CLAMP_TO_EDGE as _,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_S,
-            glow::CLAMP_TO_EDGE as _,
-        );
-        gl.tex_image_2d(
-            glow::TEXTURE_2D,
-            0,
-            glow::RGBA as _,
-            image.width() as _,
-            image.height() as _,
-            0,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            Some(image.into_rgba8().as_ref()),
-        );
-        gl.generate_mipmap(glow::TEXTURE_2D);
+        // submit will accept anything that implements IntoIter
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
 
-        self.texture = Some(texture);
+        Ok(())
+    }
+
+    fn load_texture(&mut self, image: image::DynamicImage) {
+        let rgba = image.to_rgba8();
+
+        use image::GenericImageView;
+        let dimensions = image.dimensions();
+
+        let texture_size = wgpu::Extent3d {
+            width: dimensions.0,
+            height: dimensions.1,
+            depth_or_array_layers: 1,
+        };
+        let diffuse_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            // All textures are stored as 3D, we represent our 2D texture
+            // by setting depth to 1.
+            size: texture_size,
+            mip_level_count: 1, // We'll talk about this a little later
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // Most images are stored using sRGB so we need to reflect that here.
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
+            // COPY_DST means that we want to copy data to this texture
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            label: Some("diffuse_texture"),
+        });
+
+        self.queue.write_texture(
+            // Tells wgpu where to copy the pixel data
+            wgpu::ImageCopyTexture {
+                texture: &diffuse_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            // The actual pixel data
+            &rgba,
+            // The layout of the texture
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: std::num::NonZeroU32::new(4 * dimensions.0),
+                rows_per_image: std::num::NonZeroU32::new(dimensions.1),
+            },
+            texture_size,
+        );
+
+        let texture_view = diffuse_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+            label: Some("diffuse_bind_group"),
+        });
+
+        self.texture_bind_group = Some(bind_group);
     }
 }

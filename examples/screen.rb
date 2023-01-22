@@ -48,7 +48,7 @@ loop do
     else
       s2.set "examples/niko_dizzy.png"
     end
-    s.decoration alula
+    # s.decoration alula
   end
 
   sleep(1.0 / 120.0)

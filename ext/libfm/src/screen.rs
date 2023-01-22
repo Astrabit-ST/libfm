@@ -39,7 +39,7 @@ impl Screen {
         let popen = Exec::cmd(screen_path)
             .stdin(Redirection::Pipe)
             .stdout(Redirection::Pipe)
-            .stderr(Redirection::Pipe)
+            // .stderr(Redirection::Pipe)
             .popen()
             .unwrap()
             .into();
