@@ -1,26 +1,21 @@
 #![warn(rust_2018_idioms, clippy::all)]
 
-use magnus::function;
-use std::io::{prelude::*, BufReader};
+mod viewport;
+mod window;
 
-mod screen;
-
-fn exec_no_cmd(cmd: String, args: Vec<String>) -> String {
-    let stdout = subprocess::Exec::cmd(cmd)
-        .args(args.as_slice())
-        .stream_stdout()
-        .unwrap();
-    let mut br = BufReader::new(stdout);
-    let mut buf = String::new();
-    br.read_to_string(&mut buf).unwrap();
-
-    buf
+pub fn convert_rust_error(error: impl ToString) -> magnus::Error {
+    magnus::Error::new(magnus::exception::runtime_error(), error.to_string())
 }
 
 #[magnus::init]
 fn init() -> Result<(), magnus::Error> {
-    let module = magnus::define_module("LibFM")?;
-    module.define_module_function("exec_no_cmd", function!(exec_no_cmd, 2))?;
+    unsafe {
+        rb_sys::rb_ext_ractor_safe(true);
+    }
 
-    screen::bind(module)
+    let mut module = magnus::define_module("LibFM")?;
+    viewport::bind(&mut module)?;
+    window::bind(&mut module)?;
+
+    Ok(())
 }

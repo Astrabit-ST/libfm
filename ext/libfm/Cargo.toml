@@ -9,9 +9,12 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-magnus = { version = "0.4", features = ["rb-sys-interop"] }
+magnus = { version = "0.5", features = ["rb-sys-interop"] }
 rb-sys = { version = "0.9", features = ["ruby-macros"] }
-subprocess = "0.2.9"
-ron = "0.8.0"
-serde = "1.0"
+
 parking_lot = "0.12.1"
+
+interprocess = "1.2"
+
+screen = { version = "*", path = "../screen" }
+ron = "0.8"

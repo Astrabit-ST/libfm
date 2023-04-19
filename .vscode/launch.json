@@ -5,6 +5,36 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "(gdb) Launch",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "/home/lily/.rbenv/versions/3.2.0/bin/ruby",
+            "args": [
+                "-Ilib",
+                "examples/screen.rb"
+            ],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Set Disassembly Flavor to Intel",
+                    "text": "-gdb-set disassembly-flavor intel",
+                    "ignoreFailures": true
+                },
+            ],
+            "miDebuggerArgs": "-ix \"set detach-on-fork off\"",
+            "miDebuggerPath": "/home/lily/.cargo/bin/rust-gdb",
+            "preLaunchTask": "compile"
+        },
+        {
             "type": "lldb",
             "request": "launch",
             "name": "Debug screen",
@@ -17,7 +47,7 @@
             "request": "launch",
             "name": "Debug",
             "preLaunchTask": "compile",
-            "program": "C:/Ruby31-x64/bin/ruby",
+            "program": "~/.rbenv/versions/3.2.0/bin/ruby",
             "args": [
                 "-Ilib",
                 "examples/screen.rb"
@@ -25,7 +55,7 @@
             "cwd": "${workspaceFolder}",
             "sourceLanguages": [
                 "rust"
-            ]
+            ],
         },
     ]
 }
