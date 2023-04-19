@@ -16,7 +16,7 @@
 // along with libfm.  If not, see <http://www.gnu.org/licenses/>.
 
 use magnus::{function, method, Module, Object};
-use parking_lot::Mutex;
+use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
 
 use crate::convert_rust_error;
 use interprocess::local_socket;
@@ -53,12 +53,12 @@ impl Drop for Inner {
     }
 }
 
-#[magnus::wrap(class = "LibFM::Window", free_immediately, size)]
-pub struct Window {
+#[magnus::wrap(class = "LibFM::Screen", free_immediately, size)]
+pub struct Screen {
     inner: Mutex<Inner>,
 }
 
-impl Window {
+impl Screen {
     fn new(args: &[magnus::Value]) -> Result<Self, magnus::Error> {
         let args = magnus::scan_args::scan_args::<(), (), (), (), _, ()>(args)?;
         let args = magnus::scan_args::get_kwargs::<_, (), _, ()>(
@@ -111,13 +111,17 @@ impl Window {
 
         Ok(())
     }
+
+    pub fn socket(&self) -> MappedMutexGuard<'_, local_socket::LocalSocketStream> {
+        MutexGuard::map(self.inner.lock(), |i| &mut i.socket)
+    }
 }
 
 pub fn bind(module: &mut impl magnus::Module) -> Result<(), magnus::Error> {
-    let class = module.define_class("Window", Default::default())?;
-    class.define_singleton_method("new", function!(Window::new, -1))?;
-    class.define_method("alive?", method!(Window::is_alive, 0))?;
-    class.define_method("move", method!(Window::reposition, 2))?;
+    let class = module.define_class("Screen", Default::default())?;
+    class.define_singleton_method("new", function!(Screen::new, -1))?;
+    class.define_method("alive?", method!(Screen::is_alive, 0))?;
+    class.define_method("move", method!(Screen::reposition, 2))?;
 
     Ok(())
 }

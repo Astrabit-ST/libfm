@@ -18,3 +18,5 @@ interprocess = "1.2"
 
 screen = { version = "*", path = "../screen" }
 ron = "0.8"
+
+rand = "0.8.5"

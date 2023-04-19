@@ -2,4 +2,9 @@
 
 require 'libfm'
 
-window = LibFM::Window.new
+screen = LibFM::Screen.new
+viewport = LibFM::Viewport.new(screen, visible: true)
+
+loop do
+  sleep(1)
+end

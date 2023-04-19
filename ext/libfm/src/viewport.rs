@@ -16,16 +16,19 @@
 // along with libfm.  If not, see <http://www.gnu.org/licenses/>.
 
 use magnus::{function, Object};
+use std::io::Write;
 
-use crate::{convert_rust_error, window::Window};
+use crate::{convert_rust_error, screen::Screen};
 
 #[magnus::wrap(class = "LibFM::Viewport", free_immediately, size)]
-struct Viewport {}
+struct Viewport {
+    id: usize,
+}
 
 impl Viewport {
     fn new(args: &[magnus::Value]) -> Result<Self, magnus::Error> {
         let args = magnus::scan_args::scan_args::<_, (), (), (), _, ()>(args)?;
-        let window: (&Window,) = args.required;
+        let (screen,): (&Screen,) = args.required;
 
         let args = magnus::scan_args::get_kwargs::<_, (), _, ()>(
             args.keywords,
@@ -44,16 +47,23 @@ impl Viewport {
         let visible = visible.unwrap_or_default();
         let size = size.unwrap_or((640, 480));
 
-        let config = screen::Config {
+        let config = screen::WindowConfig {
             title,
             pos,
             visible,
             size,
             z,
         };
-        let config = ron::to_string(&config).map_err(convert_rust_error)?;
+        let id = rand::random();
+        let message = screen::Message::CreateWindow(config, id);
 
-        Ok(Viewport {})
+        let message = ron::to_string(&message).map_err(convert_rust_error)?;
+        let mut socket = screen.socket();
+        socket
+            .write(message.as_bytes())
+            .expect("failed to send config");
+
+        Ok(Viewport { id })
     }
 }
 

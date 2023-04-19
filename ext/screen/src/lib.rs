@@ -15,8 +15,8 @@
 // You should have received a copy of the GNU General Public License
 // along with libfm.  If not, see <http://www.gnu.org/licenses/>.
 
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct Config {
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+pub struct WindowConfig {
     pub title: String,
     pub pos: Option<(i32, i32)>,
     pub visible: bool,
@@ -25,4 +25,13 @@ pub struct Config {
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
-pub enum Message {}
+pub enum Message {
+    CreateWindow(WindowConfig, usize),
+    DeleteWindow(usize),
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug)]
+pub enum ReturnMessage {
+    CreatedWindow(usize),
+    CloseRequested(usize),
+}

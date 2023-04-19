@@ -1,7 +1,7 @@
 #![warn(rust_2018_idioms, clippy::all)]
 
 mod viewport;
-mod window;
+mod screen;
 
 pub fn convert_rust_error(error: impl ToString) -> magnus::Error {
     magnus::Error::new(magnus::exception::runtime_error(), error.to_string())
@@ -15,7 +15,7 @@ fn init() -> Result<(), magnus::Error> {
 
     let mut module = magnus::define_module("LibFM")?;
     viewport::bind(&mut module)?;
-    window::bind(&mut module)?;
+    screen::bind(&mut module)?;
 
     Ok(())
 }
