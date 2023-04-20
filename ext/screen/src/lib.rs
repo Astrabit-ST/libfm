@@ -39,6 +39,5 @@ pub enum Message {
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 pub enum ReturnMessage {
-    CreatedWindow(usize),
     CloseRequested(usize),
 }

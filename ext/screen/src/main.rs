@@ -2,8 +2,12 @@ use screen::Message;
 
 use indexmap::IndexMap;
 use std::sync::Arc;
+use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
 
-use tokio::sync::{mpsc::unbounded_channel, Mutex};
+use tokio::{
+    io::BufReader,
+    sync::{mpsc::unbounded_channel, Mutex},
+};
 use winit::event::Event;
 
 mod event_loop;
@@ -44,9 +48,17 @@ fn main() {
         .expect("failed to build runtime");
     runtime.spawn(async move {
         let state = async_state;
+        let socket_addr = std::env::args().nth(1).expect("socket addr not provided");
+        let socket = interprocess::local_socket::tokio::LocalSocketStream::connect(socket_addr)
+            .await
+            .expect("failed to connect to socket");
 
-        tokio::task::spawn(socket_loop::run(proxy));
-        event_loop::run(state, event_recv).await;
+        let (reader, writer) = socket.into_split();
+        let reader = BufReader::new(reader.compat());
+        let writer = writer.compat_write();
+
+        tokio::task::spawn(socket_loop::run(proxy, reader));
+        event_loop::run(state, event_recv, writer).await;
     });
 
     event_loop.run(move |event, target, c| {

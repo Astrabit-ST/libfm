@@ -17,11 +17,18 @@
 
 use magnus::{function, method, Module, Object};
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
+use screen::ReturnMessage;
 
 use crate::convert_rust_error;
 use interprocess::local_socket;
 
-use std::sync::Arc;
+use std::{
+    io::{BufRead, BufReader},
+    sync::{
+        mpsc::{channel, Receiver},
+        Arc,
+    },
+};
 
 macro_rules! gaurd_dead {
     ($child:expr) => {
@@ -45,7 +52,8 @@ macro_rules! gaurd_dead {
 
 struct Inner {
     child: std::process::Child,
-    socket: local_socket::LocalSocketStream,
+    writer: crate::SocketWriter,
+    message_recv: Receiver<ReturnMessage>,
 }
 
 impl Drop for Inner {
@@ -83,8 +91,6 @@ impl Screen {
             }
         };
 
-        // eprintln!("connecting to socket at {socket_addr}");
-
         let listener = local_socket::LocalSocketListener::bind(socket_addr.clone())
             .map_err(convert_rust_error)?;
 
@@ -96,11 +102,36 @@ impl Screen {
         gaurd_dead!(child);
 
         let socket = listener.accept().map_err(convert_rust_error)?;
+        let (reader, writer) = crate::into_split(socket);
+        let (message_send, message_recv) = channel();
 
-        // eprintln!("connected");
+        // The thread should stop executing when the screen process dies.
+        // This is because the process writing to the socket has died, closing it.
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(reader);
+            let mut buf = String::with_capacity(4096);
+            loop {
+                if let Err(e) = reader.read_line(&mut buf) {
+                    eprintln!("error reading socket {e}");
+
+                    return;
+                }
+
+                let message = ron::from_str(&buf).expect("error deserializing return message");
+                message_send
+                    .send(message)
+                    .expect("error sending return message");
+
+                buf.clear();
+            }
+        });
 
         Ok(Self {
-            inner: Arc::new(Mutex::new(Inner { child, socket })),
+            inner: Arc::new(Mutex::new(Inner {
+                child,
+                writer,
+                message_recv,
+            })),
         })
     }
 
@@ -112,8 +143,12 @@ impl Screen {
             .is_ok_and(|c| c.is_none())
     }
 
-    pub fn socket(&self) -> MappedMutexGuard<'_, local_socket::LocalSocketStream> {
-        MutexGuard::map(self.inner.lock(), |i| &mut i.socket)
+    pub(crate) fn socket(&self) -> MappedMutexGuard<'_, crate::SocketWriter> {
+        MutexGuard::map(self.inner.lock(), |i| &mut i.writer)
+    }
+
+    pub(crate) fn message_recv(&self) -> MappedMutexGuard<'_, Receiver<ReturnMessage>> {
+        MutexGuard::map(self.inner.lock(), |i: &mut Inner| &mut i.message_recv)
     }
 }
 

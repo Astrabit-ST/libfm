@@ -16,20 +16,14 @@
 // along with libfm.  If not, see <http://www.gnu.org/licenses/>.
 
 use screen::Message;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio_util::compat::FuturesAsyncReadCompatExt;
 use winit::event_loop::EventLoopProxy;
 
-pub async fn run(proxy: EventLoopProxy<Message>) -> ! {
-    let socket_addr = std::env::args().nth(1).expect("socket addr not provided");
-    let socket = interprocess::local_socket::tokio::LocalSocketStream::connect(socket_addr)
-        .await
-        .expect("failed to connect to socket");
-    let mut reader = BufReader::new(socket.compat());
-
+pub async fn run(
+    proxy: EventLoopProxy<Message>,
+    mut reader: impl tokio::io::AsyncBufReadExt + Unpin,
+) -> ! {
     let mut buf = String::with_capacity(4096);
     loop {
-        // eprintln!("starting to read socket");
         if let Err(e) = reader.read_line(&mut buf).await {
             eprintln!("error reading socket buffer: {e:?}")
         }
@@ -38,7 +32,7 @@ pub async fn run(proxy: EventLoopProxy<Message>) -> ! {
 
             continue;
         };
-        // eprintln!("got message {message:?}");
+
         proxy
             .send_event(message)
             .expect("failed to send message to event loop");

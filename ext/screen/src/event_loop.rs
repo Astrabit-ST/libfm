@@ -18,12 +18,14 @@
 use std::sync::Arc;
 
 use crate::{Message, Sprite, State};
+use screen::ReturnMessage;
 use tokio::sync::{mpsc::UnboundedReceiver, Mutex};
-use winit::event::Event;
+use winit::event::{Event, WindowEvent};
 
 pub async fn run(
     state: Arc<Mutex<State>>,
     mut event_recv: UnboundedReceiver<Event<'static, Message>>,
+    mut writer: impl tokio::io::AsyncWriteExt + Unpin,
 ) -> ! {
     loop {
         // Process multiple events at a time in case they have been sent in rapid fire
@@ -118,7 +120,7 @@ pub async fn run(
                     sprite.y = y;
                     sprite.z = z;
                 }
-                /*
+
                 Event::WindowEvent { window_id, event } => {
                     let (id, window) = state
                         .windows
@@ -140,7 +142,7 @@ pub async fn run(
                             .expect("failed to write to socket");
                     }
                 }
-                */
+
                 Event::RedrawRequested(window_id) => {
                     let (_, window) = state
                         .windows
