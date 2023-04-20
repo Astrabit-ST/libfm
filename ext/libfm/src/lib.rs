@@ -10,7 +10,7 @@ macro_rules! send {
         use crate::convert_rust_error;
         use std::io::Write;
         let message = $msg;
-        eprintln!("sending message {:?}", message);
+        // eprintln!("sending message {:?}", message);
 
         let mut socket = $socket;
         socket
@@ -27,7 +27,7 @@ macro_rules! send {
         use crate::convert_rust_error;
         use std::io::Write;
         let message = $msg;
-        eprintln!("sending message {:?}", message);
+        // eprintln!("sending message {:?}", message);
 
         $socket
             .write(

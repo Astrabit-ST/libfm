@@ -71,7 +71,7 @@ impl Screen {
         )?;
         let (screen_path, socket_addr): (Option<_>, Option<String>) = args.optional;
 
-        let screen_path = screen_path.unwrap_or_else(|| "target/debug/screen".to_string());
+        let screen_path = screen_path.unwrap_or_else(|| "target/release/screen".to_string());
 
         let socket_addr = socket_addr.unwrap_or_else(|| "abcdef".to_string());
         let socket_addr = match local_socket::NameTypeSupport::query() {
@@ -83,7 +83,7 @@ impl Screen {
             }
         };
 
-        eprintln!("connecting to socket at {socket_addr}");
+        // eprintln!("connecting to socket at {socket_addr}");
 
         let listener = local_socket::LocalSocketListener::bind(socket_addr.clone())
             .map_err(convert_rust_error)?;
@@ -97,7 +97,7 @@ impl Screen {
 
         let socket = listener.accept().map_err(convert_rust_error)?;
 
-        eprintln!("connected");
+        // eprintln!("connected");
 
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner { child, socket })),
