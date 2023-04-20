@@ -16,6 +16,14 @@ struct State {
 struct Window {
     window: winit::window::Window,
     pixels: pixels::Pixels,
+    sprites: HashMap<usize, Sprite>,
+    sprites_dirty: bool,
+}
+
+struct Sprite {
+    x: i32,
+    y: i32,
+    image: Option<image::RgbaImage>,
 }
 
 fn main() {
@@ -47,14 +55,16 @@ fn main() {
         tokio::task::spawn(async move {
             let mut buf = String::with_capacity(4096);
             loop {
+                eprintln!("starting to read socket");
                 if let Err(e) = reader.read_line(&mut buf).await {
                     eprintln!("error reading socket buffer: {e:?}")
                 }
                 let Ok(message) = ron::from_str::<Message>(&buf) else {
-                eprintln!("error reading message");
+                    eprintln!("error reading message");
 
-                continue;
-            };
+                    continue;
+                };
+                eprintln!("got message {message:?}");
                 proxy
                     .send_event(message)
                     .expect("failed to send message to event loop");
@@ -67,8 +77,86 @@ fn main() {
             let event = event_recv.recv().await.expect("sender is closed");
             let mut state = state.lock().await;
             match event {
+                Event::UserEvent(Message::ResizeWindow(width, height, window_id)) => {
+                    let window = state
+                        .windows
+                        .get_mut(&window_id)
+                        .expect("window event recieved for nonexistent window");
+                    window
+                        .window
+                        .set_inner_size(winit::dpi::PhysicalSize::new(width, height));
+                    window
+                        .pixels
+                        .resize_buffer(width, height)
+                        .expect("failed to resize pixel buffer");
+                    window
+                        .pixels
+                        .resize_surface(width, height)
+                        .expect("failed to resize window surface");
+                    window.sprites_dirty = true;
+                }
+                Event::UserEvent(Message::RepositionWindow(x, y, window_id)) => {
+                    let window = state
+                        .windows
+                        .get_mut(&window_id)
+                        .expect("window event recieved for nonexistent window");
+                    window
+                        .window
+                        .set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+                }
                 Event::UserEvent(Message::DeleteWindow(id)) => {
                     drop(state.windows.remove(&id));
+                }
+                Event::UserEvent(Message::CreateSprite(sprite_id, window_id)) => {
+                    let window = state
+                        .windows
+                        .get_mut(&window_id)
+                        .expect("window event recieved for nonexistent window");
+                    window.sprites.insert(
+                        sprite_id,
+                        Sprite {
+                            x: 0,
+                            y: 0,
+                            image: None,
+                        },
+                    );
+                }
+                Event::UserEvent(Message::RemoveSprite(sprite_id, window_id)) => {
+                    let window = state
+                        .windows
+                        .get_mut(&window_id)
+                        .expect("window event recieved for nonexistent window");
+                    window.sprites_dirty = true;
+                    drop(window.sprites.remove(&sprite_id));
+                }
+                Event::UserEvent(Message::SetSprite(sprite_id, window_id, path)) => {
+                    let window = state
+                        .windows
+                        .get_mut(&window_id)
+                        .expect("window event recieved for nonexistent window");
+                    window.sprites_dirty = true;
+                    let sprite = window
+                        .sprites
+                        .get_mut(&sprite_id)
+                        .expect("sprite event recieved for nonexistent sprite");
+                    sprite.image = Some(
+                        image::open(path)
+                            .expect("failed to load image")
+                            .into_rgba8(),
+                    );
+                }
+                Event::UserEvent(Message::RepositionSprite(sprite_id, window_id, x, y)) => {
+                    let window = state
+                        .windows
+                        .get_mut(&window_id)
+                        .expect("window event recieved for nonexistent window");
+                    window.sprites_dirty = true;
+                    let sprite = window
+                        .sprites
+                        .get_mut(&sprite_id)
+                        .expect("sprite event recieved for nonexistent sprite");
+                    sprite.x = x;
+                    sprite.y = y;
                 }
                 Event::WindowEvent { window_id, event } => {
                     let (id, window) = state
@@ -97,6 +185,35 @@ fn main() {
                         .iter_mut()
                         .find(|(_, window)| window.window.id() == window_id)
                         .expect("window event received for nonexistent window");
+                    if window.sprites_dirty {
+                        let size = window.pixels.texture().size();
+                        let buffer = window.pixels.frame_mut();
+
+                        buffer.fill(0);
+                        for sprite in window.sprites.values() {
+                            if let Some(image) = &sprite.image {
+                                for (x, y, pixel) in image.enumerate_pixels() {
+                                    let x = sprite.x + x as i32;
+                                    let y = sprite.y + y as i32;
+                                    if x.is_negative() || y.is_negative() {
+                                        continue;
+                                    }
+
+                                    let start_index =
+                                        ((y * size.width as i32 * 4) + (x * 4)) as usize;
+                                    if start_index > buffer.len() {
+                                        continue;
+                                    }
+
+                                    buffer[start_index] = pixel[0];
+                                    buffer[start_index + 1] = pixel[1];
+                                    buffer[start_index + 2] = pixel[2];
+                                    buffer[start_index + 3] = pixel[3];
+                                }
+                            }
+                        }
+                        window.sprites_dirty = false;
+                    }
                     window.pixels.render().expect("failed to render window");
                 }
                 _ => {}
@@ -113,15 +230,27 @@ fn main() {
                 .with_visible(conf.visible)
                 .with_inner_size(winit::dpi::PhysicalSize::new(conf.size.0, conf.size.1))
                 .with_transparent(true)
+                .with_decorations(conf.decorations)
+                .with_resizable(false)
                 .with_title(&conf.title);
             if let Some((x, y)) = conf.pos {
                 builder = builder.with_position(winit::dpi::LogicalPosition::new(x, y));
             }
             let window = builder.build(target).expect("failed to create window");
             let surface = pixels::SurfaceTexture::new(conf.size.0, conf.size.1, &window);
-            let pixels = pixels::Pixels::new(conf.size.0, conf.size.1, surface)
+            let pixels = pixels::PixelsBuilder::new(conf.size.0, conf.size.1, surface)
+                .clear_color(pixels::wgpu::Color::TRANSPARENT)
+                .build()
                 .expect("failed to create pixels");
-            state.windows.insert(id, Window { window, pixels });
+            state.windows.insert(
+                id,
+                Window {
+                    window,
+                    pixels,
+                    sprites: HashMap::new(),
+                    sprites_dirty: false,
+                },
+            );
         }
 
         if let Some(e) = event.to_static() {

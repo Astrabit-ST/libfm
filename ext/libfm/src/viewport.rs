@@ -15,14 +15,22 @@
 // You should have received a copy of the GNU General Public License
 // along with libfm.  If not, see <http://www.gnu.org/licenses/>.
 
-use magnus::{function, Object};
+use magnus::{function, method, Module, Object};
+use screen::Message;
 use std::io::Write;
 
-use crate::{convert_rust_error, screen::Screen};
+use crate::{screen::Screen, send};
 
 #[magnus::wrap(class = "LibFM::Viewport", free_immediately, size)]
-struct Viewport {
-    id: usize,
+pub struct Viewport {
+    pub id: usize,
+    pub screen: Screen,
+}
+
+impl Drop for Viewport {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 impl Viewport {
@@ -33,9 +41,10 @@ impl Viewport {
         let args = magnus::scan_args::get_kwargs::<_, (), _, ()>(
             args.keywords,
             &[],
-            &["position", "z", "title", "visible", "size"],
+            &["position", "z", "title", "visible", "size", "decorations"],
         )?;
-        let (pos, z, title, visible, size): (
+        let (pos, z, title, visible, size, decorations): (
+            Option<_>,
             Option<_>,
             Option<_>,
             Option<_>,
@@ -45,31 +54,63 @@ impl Viewport {
 
         let title = title.unwrap_or_else(|| "screen exe".to_string());
         let visible = visible.unwrap_or_default();
+        let decorations = decorations.unwrap_or_default();
         let size = size.unwrap_or((640, 480));
 
         let config = screen::WindowConfig {
             title,
             pos,
             visible,
+            decorations,
             size,
             z,
         };
         let id = rand::random();
-        let message = screen::Message::CreateWindow(config, id);
 
-        let message = ron::to_string(&message).map_err(convert_rust_error)?;
-        let mut socket = screen.socket();
-        socket
-            .write(message.as_bytes())
-            .expect("failed to send config");
+        send!(drop screen.socket(), screen::Message::CreateWindow(config, id));
 
-        Ok(Viewport { id })
+        Ok(Viewport {
+            id,
+            screen: screen.clone(),
+        })
+    }
+
+    fn reposition(&self, x: i32, y: i32) -> Result<(), magnus::Error> {
+        send!(drop self.screen.socket(), Message::RepositionWindow(x, y, self.id));
+
+        Ok(())
+    }
+
+    fn resize(&self, x: u32, y: u32) -> Result<(), magnus::Error> {
+        send!(drop self.screen.socket(), Message::ResizeWindow(x, y, self.id));
+
+        Ok(())
+    }
+
+    fn close(&self) {
+        let mut socket = self.screen.socket();
+        let text = match ron::to_string(&Message::DeleteWindow(self.id)) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error serializing {e:?}");
+                return;
+            }
+        };
+        if let Err(e) = socket
+            .write(text.as_bytes())
+            .and_then(|_| socket.write(&[b'\n']))
+        {
+            eprintln!("error sending message {e:?}")
+        }
     }
 }
 
 pub fn bind(module: &mut impl magnus::Module) -> Result<(), magnus::Error> {
     let class = module.define_class("Viewport", Default::default())?;
     class.define_singleton_method("new", function!(Viewport::new, -1))?;
+    class.define_method("move", method!(Viewport::reposition, 2))?;
+    class.define_method("close", method!(Viewport::close, 0))?;
+    class.define_method("resize", method!(Viewport::resize, 2))?;
 
     Ok(())
 }

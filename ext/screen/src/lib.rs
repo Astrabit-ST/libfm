@@ -20,6 +20,7 @@ pub struct WindowConfig {
     pub title: String,
     pub pos: Option<(i32, i32)>,
     pub visible: bool,
+    pub decorations: bool,
     pub size: (u32, u32),
     pub z: Option<i32>,
 }
@@ -28,6 +29,12 @@ pub struct WindowConfig {
 pub enum Message {
     CreateWindow(WindowConfig, usize),
     DeleteWindow(usize),
+    ResizeWindow(u32, u32, usize),
+    RepositionWindow(i32, i32, usize),
+    CreateSprite(usize, usize),
+    RemoveSprite(usize, usize),
+    SetSprite(usize, usize, String),
+    RepositionSprite(usize, usize, i32, i32),
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]

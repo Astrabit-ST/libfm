@@ -21,6 +21,8 @@ use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
 use crate::convert_rust_error;
 use interprocess::local_socket;
 
+use std::sync::Arc;
+
 macro_rules! gaurd_dead {
     ($child:expr) => {
         match $child.try_wait() {
@@ -54,8 +56,9 @@ impl Drop for Inner {
 }
 
 #[magnus::wrap(class = "LibFM::Screen", free_immediately, size)]
+#[derive(Clone)]
 pub struct Screen {
-    inner: Mutex<Inner>,
+    inner: Arc<Mutex<Inner>>,
 }
 
 impl Screen {
@@ -70,7 +73,7 @@ impl Screen {
 
         let screen_path = screen_path.unwrap_or_else(|| "target/debug/screen".to_string());
 
-        let socket_addr = socket_addr.unwrap_or_else(|| "screen".to_string());
+        let socket_addr = socket_addr.unwrap_or_else(|| "abcdef".to_string());
         let socket_addr = match local_socket::NameTypeSupport::query() {
             local_socket::NameTypeSupport::OnlyPaths => {
                 format!("/tmp/libfm-screen-sock-{socket_addr}.sock")
@@ -79,6 +82,8 @@ impl Screen {
                 format!("@libfm-screen-sock-{socket_addr}.sock")
             }
         };
+
+        eprintln!("connecting to socket at {socket_addr}");
 
         let listener = local_socket::LocalSocketListener::bind(socket_addr.clone())
             .map_err(convert_rust_error)?;
@@ -92,8 +97,10 @@ impl Screen {
 
         let socket = listener.accept().map_err(convert_rust_error)?;
 
+        eprintln!("connected");
+
         Ok(Self {
-            inner: Mutex::new(Inner { child, socket }),
+            inner: Arc::new(Mutex::new(Inner { child, socket })),
         })
     }
 
@@ -105,13 +112,6 @@ impl Screen {
             .is_ok_and(|c| c.is_none())
     }
 
-    fn reposition(&self, _x: i32, _y: i32) -> Result<(), magnus::Error> {
-        let mut inner = self.inner.lock();
-        gaurd_dead!(inner.child);
-
-        Ok(())
-    }
-
     pub fn socket(&self) -> MappedMutexGuard<'_, local_socket::LocalSocketStream> {
         MutexGuard::map(self.inner.lock(), |i| &mut i.socket)
     }
@@ -121,7 +121,6 @@ pub fn bind(module: &mut impl magnus::Module) -> Result<(), magnus::Error> {
     let class = module.define_class("Screen", Default::default())?;
     class.define_singleton_method("new", function!(Screen::new, -1))?;
     class.define_method("alive?", method!(Screen::is_alive, 0))?;
-    class.define_method("move", method!(Screen::reposition, 2))?;
 
     Ok(())
 }
