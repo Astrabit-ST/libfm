@@ -37,10 +37,8 @@ pub enum Message {
     RepositionSprite(usize, usize, i32, i32, i32),
 }
 
-/*
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 pub enum ReturnMessage {
     CreatedWindow(usize),
     CloseRequested(usize),
 }
-*/
