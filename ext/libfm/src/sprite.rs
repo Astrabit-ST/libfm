@@ -26,7 +26,7 @@ struct Sprite {
     id: usize,
     viewport_id: usize,
     screen: Screen,
-    position: Mutex<(i32, i32)>,
+    position: Mutex<(i32, i32, i32)>,
 }
 
 impl Drop for Sprite {
@@ -47,7 +47,7 @@ impl Sprite {
             id,
             screen,
             viewport_id: viewport.id,
-            position: Mutex::new((0, 0)),
+            position: Mutex::new((0, 0, 0)),
         })
     }
 
@@ -83,11 +83,12 @@ impl Sprite {
         Ok(())
     }
 
-    fn reposition(&self, x: i32, y: i32) -> Result<(), magnus::Error> {
-        *self.position.lock() = (x, y);
+    fn reposition(&self, x: i32, y: i32, z: i32) -> Result<(), magnus::Error> {
+        *self.position.lock() = (x, y, z);
+
         send!(
             drop self.screen.socket(),
-            Message::RepositionSprite(self.id, self.viewport_id, x, y)
+            Message::RepositionSprite(self.id, self.viewport_id, x, y, z)
         );
 
         Ok(())
@@ -98,7 +99,7 @@ impl Sprite {
     }
 
     fn set_x(&self, x: i32) -> Result<(), magnus::Error> {
-        self.reposition(x, self.get_y())
+        self.reposition(x, self.get_y(), self.get_z())
     }
 
     fn get_y(&self) -> i32 {
@@ -106,7 +107,15 @@ impl Sprite {
     }
 
     fn set_y(&self, y: i32) -> Result<(), magnus::Error> {
-        self.reposition(self.get_x(), y)
+        self.reposition(self.get_x(), y, self.get_z())
+    }
+
+    fn get_z(&self) -> i32 {
+        self.position.lock().2
+    }
+
+    fn set_z(&self, z: i32) -> Result<(), magnus::Error> {
+        self.reposition(self.get_x(), self.get_y(), z)
     }
 }
 
@@ -115,12 +124,14 @@ pub fn bind(module: &mut impl magnus::Module) -> Result<(), magnus::Error> {
     class.define_singleton_method("new", function!(Sprite::new, 1))?;
     class.define_method("close", method!(Sprite::close, 0))?;
     class.define_method("set", method!(Sprite::set, 1))?;
-    class.define_method("move", method!(Sprite::reposition, 2))?;
+    class.define_method("move", method!(Sprite::reposition, 3))?;
 
     class.define_method("x", method!(Sprite::get_x, 0))?;
     class.define_method("x=", method!(Sprite::set_x, 1))?;
     class.define_method("y", method!(Sprite::get_y, 0))?;
     class.define_method("y=", method!(Sprite::set_y, 1))?;
+    class.define_method("z", method!(Sprite::get_z, 0))?;
+    class.define_method("z=", method!(Sprite::set_z, 1))?;
 
     Ok(())
 }

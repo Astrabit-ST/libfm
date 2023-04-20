@@ -1,28 +1,29 @@
-use screen::{Message, ReturnMessage};
+use screen::Message;
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::sync::Arc;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc::channel, Mutex};
-use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
+use tokio_util::compat::FuturesAsyncReadCompatExt;
 
-use winit::event::{Event, WindowEvent};
+use winit::event::Event;
 
 struct State {
-    windows: HashMap<usize, Window>,
+    windows: IndexMap<usize, Window>,
 }
 
 struct Window {
     window: winit::window::Window,
     pixels: pixels::Pixels,
-    sprites: HashMap<usize, Sprite>,
+    sprites: IndexMap<usize, Sprite>,
     sprites_dirty: bool,
 }
 
 struct Sprite {
     x: i32,
     y: i32,
+    z: i32,
     image: Option<image::RgbaImage>,
 }
 
@@ -31,7 +32,7 @@ fn main() {
     let proxy = event_loop.create_proxy();
 
     let state = Arc::new(Mutex::new(State {
-        windows: HashMap::new(),
+        windows: IndexMap::new(),
     }));
     let async_state = state.clone();
     let (event_send, mut event_recv) = channel(2);
@@ -48,9 +49,7 @@ fn main() {
         let socket = interprocess::local_socket::tokio::LocalSocketStream::connect(socket_addr)
             .await
             .expect("failed to connect to socket");
-        let (reader, writer) = socket.into_split();
-        let mut reader = BufReader::new(reader.compat());
-        let mut writer = writer.compat_write();
+        let mut reader = BufReader::new(socket.compat());
 
         tokio::task::spawn(async move {
             let mut buf = String::with_capacity(4096);
@@ -117,6 +116,7 @@ fn main() {
                         Sprite {
                             x: 0,
                             y: 0,
+                            z: 0,
                             image: None,
                         },
                     );
@@ -145,7 +145,7 @@ fn main() {
                             .into_rgba8(),
                     );
                 }
-                Event::UserEvent(Message::RepositionSprite(sprite_id, window_id, x, y)) => {
+                Event::UserEvent(Message::RepositionSprite(sprite_id, window_id, x, y, z)) => {
                     let window = state
                         .windows
                         .get_mut(&window_id)
@@ -157,7 +157,9 @@ fn main() {
                         .expect("sprite event recieved for nonexistent sprite");
                     sprite.x = x;
                     sprite.y = y;
+                    sprite.z = z;
                 }
+                /*
                 Event::WindowEvent { window_id, event } => {
                     let (id, window) = state
                         .windows
@@ -179,6 +181,7 @@ fn main() {
                             .expect("failed to write to socket");
                     }
                 }
+                */
                 Event::RedrawRequested(window_id) => {
                     let (_, window) = state
                         .windows
@@ -186,6 +189,9 @@ fn main() {
                         .find(|(_, window)| window.window.id() == window_id)
                         .expect("window event received for nonexistent window");
                     if window.sprites_dirty {
+                        window
+                            .sprites
+                            .sort_unstable_by(|_, s, _, s2| s.z.cmp(&s2.z));
                         let size = window.pixels.texture().size();
                         let buffer = window.pixels.frame_mut();
 
@@ -247,7 +253,7 @@ fn main() {
                 Window {
                     window,
                     pixels,
-                    sprites: HashMap::new(),
+                    sprites: IndexMap::new(),
                     sprites_dirty: false,
                 },
             );

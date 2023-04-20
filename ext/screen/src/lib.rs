@@ -34,11 +34,13 @@ pub enum Message {
     CreateSprite(usize, usize),
     RemoveSprite(usize, usize),
     SetSprite(usize, usize, String),
-    RepositionSprite(usize, usize, i32, i32),
+    RepositionSprite(usize, usize, i32, i32, i32),
 }
 
+/*
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 pub enum ReturnMessage {
     CreatedWindow(usize),
     CloseRequested(usize),
 }
+*/
