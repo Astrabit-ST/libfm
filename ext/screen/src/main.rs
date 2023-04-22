@@ -2,12 +2,8 @@ use screen::Message;
 
 use indexmap::IndexMap;
 use std::sync::Arc;
-use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
 
-use tokio::{
-    io::BufReader,
-    sync::{mpsc::unbounded_channel, Mutex},
-};
+use tokio::sync::{mpsc::unbounded_channel, Mutex};
 use winit::event::Event;
 
 mod event_loop;
@@ -58,8 +54,6 @@ fn main() {
             .expect("failed to connect to socket");
 
         let (reader, writer) = socket.into_split();
-        let reader = BufReader::new(reader.compat());
-        let writer = writer.compat_write();
 
         tokio::task::spawn(socket_loop::run(proxy, reader));
         event_loop::run(state, event_recv, writer).await;

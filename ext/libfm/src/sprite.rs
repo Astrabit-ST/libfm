@@ -19,7 +19,6 @@ use crate::{screen::Screen, send, viewport::Viewport};
 use magnus::{function, method, Module, Object};
 use parking_lot::Mutex;
 use screen::Message;
-use std::io::Write;
 
 #[magnus::wrap(class = "LibFM::Sprite", free_immediately, size)]
 struct Sprite {
@@ -39,9 +38,8 @@ impl Sprite {
     pub fn new(viewport: &Viewport) -> Result<Self, magnus::Error> {
         let screen = viewport.screen.clone();
 
-        let socket = screen.socket();
         let id = rand::random();
-        send!(drop socket, Message::CreateSprite(id, viewport.id));
+        send!(screen, Message::CreateSprite(id, viewport.id));
 
         Ok(Self {
             id,
@@ -52,20 +50,18 @@ impl Sprite {
     }
 
     fn close(&self) {
-        let mut socket = self.screen.socket();
-        let text = match ron::to_string(&Message::RemoveSprite(self.id, self.viewport_id)) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("error serializing {e:?}");
-                return;
+        use futures::prelude::*;
+
+        let lock = &mut *self.screen.lock();
+        lock.runtime.block_on(async {
+            if let Err(e) = lock
+                .writer
+                .send(Message::RemoveSprite(self.id, self.viewport_id))
+                .await
+            {
+                eprintln!("error sending message {e:?}")
             }
-        };
-        if let Err(e) = socket
-            .write(text.as_bytes())
-            .and_then(|_| socket.write(&[b'\n']))
-        {
-            eprintln!("error sending message {e:?}")
-        }
+        });
     }
 
     fn set(&self, filename: String) -> Result<(), magnus::Error> {
@@ -75,8 +71,9 @@ impl Sprite {
                 format!("File does not exist {filename}"),
             ));
         }
+
         send!(
-            drop self.screen.socket(),
+            self.screen,
             Message::SetSprite(self.id, self.viewport_id, filename)
         );
 
@@ -87,7 +84,7 @@ impl Sprite {
         *self.position.lock() = (x, y, z);
 
         send!(
-            drop self.screen.socket(),
+            self.screen,
             Message::RepositionSprite(self.id, self.viewport_id, x, y, z)
         );
 

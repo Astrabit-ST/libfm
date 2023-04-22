@@ -18,6 +18,8 @@
 use std::sync::Arc;
 
 use crate::{Message, Sprite, State};
+use async_bincode::futures::AsyncBincodeWriter;
+use futures::prelude::*;
 use screen::ReturnMessage;
 use tokio::sync::{mpsc::UnboundedReceiver, Mutex};
 use winit::event::{Event, WindowEvent};
@@ -25,8 +27,9 @@ use winit::event::{Event, WindowEvent};
 pub async fn run(
     state: Arc<Mutex<State>>,
     mut event_recv: UnboundedReceiver<Event<'static, Message>>,
-    mut writer: impl tokio::io::AsyncWriteExt + Unpin,
+    writer: impl AsyncWrite + Unpin,
 ) -> ! {
+    let mut writer = AsyncBincodeWriter::from(writer).for_async();
     loop {
         // Process multiple events at a time in case they have been sent in rapid fire
         let mut events = vec![event_recv.recv().await.expect("sender is closed")];
@@ -127,17 +130,9 @@ pub async fn run(
                     };
                     if let Some(message) = message {
                         writer
-                            .write(
-                                ron::to_string(&message)
-                                    .expect("failed to serialize return message")
-                                    .as_bytes(),
-                            )
+                            .send(message)
                             .await
-                            .expect("failed to write to socket");
-                        writer
-                            .write(&[b'\n'])
-                            .await
-                            .expect("failed to write to socket");
+                            .expect("failed to send response message");
                     }
                 }
 

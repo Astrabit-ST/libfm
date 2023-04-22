@@ -17,7 +17,6 @@
 
 use magnus::{function, method, Module, Object};
 use screen::Message;
-use std::io::Write;
 
 use crate::{screen::Screen, send};
 
@@ -67,7 +66,7 @@ impl Viewport {
         };
         let id = rand::random();
 
-        send!(drop screen.socket(), screen::Message::CreateWindow(config, id));
+        send!(screen, screen::Message::CreateWindow(config, id));
 
         Ok(Viewport {
             id,
@@ -76,32 +75,26 @@ impl Viewport {
     }
 
     fn reposition(&self, x: i32, y: i32) -> Result<(), magnus::Error> {
-        send!(drop self.screen.socket(), Message::RepositionWindow(x, y, self.id));
+        send!(self.screen, Message::RepositionWindow(x, y, self.id));
 
         Ok(())
     }
 
     fn resize(&self, x: u32, y: u32) -> Result<(), magnus::Error> {
-        send!(drop self.screen.socket(), Message::ResizeWindow(x, y, self.id));
+        send!(self.screen, Message::ResizeWindow(x, y, self.id));
 
         Ok(())
     }
 
     fn close(&self) {
-        let mut socket = self.screen.socket();
-        let text = match ron::to_string(&Message::DeleteWindow(self.id)) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("error serializing {e:?}");
-                return;
+        use futures::prelude::*;
+
+        let lock = &mut *self.screen.lock();
+        lock.runtime.block_on(async {
+            if let Err(e) = lock.writer.send(Message::DeleteWindow(self.id)).await {
+                eprintln!("error sending message {e:?}")
             }
-        };
-        if let Err(e) = socket
-            .write(text.as_bytes())
-            .and_then(|_| socket.write(&[b'\n']))
-        {
-            eprintln!("error sending message {e:?}")
-        }
+        });
     }
 }
 

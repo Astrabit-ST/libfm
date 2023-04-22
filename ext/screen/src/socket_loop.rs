@@ -15,28 +15,28 @@
 // You should have received a copy of the GNU General Public License
 // along with libfm.  If not, see <http://www.gnu.org/licenses/>.
 
+use async_bincode::futures::AsyncBincodeReader;
+use futures::prelude::*;
 use screen::Message;
 use winit::event_loop::EventLoopProxy;
 
-pub async fn run(
-    proxy: EventLoopProxy<Message>,
-    mut reader: impl tokio::io::AsyncBufReadExt + Unpin,
-) -> ! {
-    let mut buf = String::with_capacity(4096);
-    loop {
-        if let Err(e) = reader.read_line(&mut buf).await {
-            eprintln!("error reading socket buffer: {e:?}")
-        }
-        let Ok(message) = ron::from_str::<Message>(&buf) else {
-            eprintln!("error reading message");
+pub async fn run(proxy: EventLoopProxy<Message>, reader: impl AsyncRead + Unpin) -> ! {
+    let mut stream = AsyncBincodeReader::from(reader);
 
-            continue;
-        };
+    // if let Err(e) = reader.read_line(&mut buf).await {
+    //     eprintln!("error reading socket buffer: {e:?}")
+    // }
+    // let Ok(message) = ron::from_str::<Message>(&buf) else {
+    //     eprintln!("error reading message");
+    //
+    //     continue;
+    // };
 
+    while let Some(Ok(message)) = stream.next().await {
         proxy
             .send_event(message)
             .expect("failed to send message to event loop");
-
-        buf.clear();
     }
+
+    panic!("socket processing finished");
 }

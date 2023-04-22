@@ -16,18 +16,16 @@
 // along with libfm.  If not, see <http://www.gnu.org/licenses/>.
 
 use magnus::{function, method, Module, Object};
-use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
+use parking_lot::{Mutex, MutexGuard};
 use screen::ReturnMessage;
 
 use crate::convert_rust_error;
 use interprocess::local_socket;
 
-use std::{
-    io::{BufRead, BufReader},
-    sync::{
-        mpsc::{channel, Receiver},
-        Arc,
-    },
+use futures::prelude::*;
+use std::sync::{
+    mpsc::{channel, Receiver},
+    Arc,
 };
 
 macro_rules! gaurd_dead {
@@ -50,16 +48,24 @@ macro_rules! gaurd_dead {
     };
 }
 
-struct Inner {
+pub(crate) struct Inner {
     child: std::process::Child,
-    writer: crate::SocketWriter,
-    message_recv: Receiver<ReturnMessage>,
+    reader_handle: tokio::task::JoinHandle<()>,
+
+    pub writer: async_bincode::futures::AsyncBincodeWriter<
+        local_socket::tokio::OwnedWriteHalf,
+        screen::Message,
+        async_bincode::AsyncDestination,
+    >,
+    pub runtime: tokio::runtime::Runtime,
+    pub message_recv: Receiver<ReturnMessage>,
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
         let _ = self.child.kill();
         self.child.wait().expect("failed to wait on child");
+        self.reader_handle.abort();
     }
 }
 
@@ -91,7 +97,13 @@ impl Screen {
             }
         };
 
-        let listener = local_socket::LocalSocketListener::bind(socket_addr.clone())
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .map_err(convert_rust_error)?;
+        let _g = runtime.enter();
+
+        let listener = local_socket::tokio::LocalSocketListener::bind(socket_addr.clone())
             .map_err(convert_rust_error)?;
 
         let mut child = std::process::Command::new(screen_path)
@@ -101,28 +113,17 @@ impl Screen {
 
         gaurd_dead!(child);
 
-        let socket = listener.accept().map_err(convert_rust_error)?;
-        let (reader, writer) = crate::into_split(socket);
+        let socket = runtime
+            .block_on(listener.accept())
+            .map_err(convert_rust_error)?;
+        let (reader, writer) = socket.into_split();
+        let mut reader = async_bincode::futures::AsyncBincodeReader::from(reader);
+        let writer = async_bincode::futures::AsyncBincodeWriter::from(writer).for_async();
         let (message_send, message_recv) = channel();
 
-        // The thread should stop executing when the screen process dies.
-        // This is because the process writing to the socket has died, closing it.
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(reader);
-            let mut buf = String::with_capacity(4096);
-            loop {
-                if let Err(e) = reader.read_line(&mut buf) {
-                    eprintln!("error reading socket {e}");
-
-                    return;
-                }
-
-                let message = ron::from_str(&buf).expect("error deserializing return message");
-                message_send
-                    .send(message)
-                    .expect("error sending return message");
-
-                buf.clear();
+        let reader_handle = runtime.spawn(async move {
+            while let Some(Ok(message)) = reader.next().await {
+                message_send.send(message).expect("failed to send message");
             }
         });
 
@@ -131,6 +132,8 @@ impl Screen {
                 child,
                 writer,
                 message_recv,
+                runtime,
+                reader_handle,
             })),
         })
     }
@@ -152,12 +155,8 @@ impl Screen {
         Ok(())
     }
 
-    pub(crate) fn socket(&self) -> MappedMutexGuard<'_, crate::SocketWriter> {
-        MutexGuard::map(self.inner.lock(), |i| &mut i.writer)
-    }
-
-    pub(crate) fn message_recv(&self) -> MappedMutexGuard<'_, Receiver<ReturnMessage>> {
-        MutexGuard::map(self.inner.lock(), |i: &mut Inner| &mut i.message_recv)
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock()
     }
 }
 
