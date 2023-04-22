@@ -79,7 +79,7 @@ impl Screen {
         )?;
         let (screen_path, socket_addr): (Option<_>, Option<String>) = args.optional;
 
-        let screen_path = screen_path.unwrap_or_else(|| "target/release/screen".to_string());
+        let screen_path = screen_path.unwrap_or_else(|| "target/debug/screen".to_string());
 
         let socket_addr = socket_addr.unwrap_or_else(|| "abcdef".to_string());
         let socket_addr = match local_socket::NameTypeSupport::query() {
@@ -143,6 +143,15 @@ impl Screen {
             .is_ok_and(|c| c.is_none())
     }
 
+    fn process_events(&self) -> Result<(), magnus::Error> {
+        let inner = self.inner.lock();
+        for message in inner.message_recv.try_iter() {
+            eprintln!("{message:?}")
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn socket(&self) -> MappedMutexGuard<'_, crate::SocketWriter> {
         MutexGuard::map(self.inner.lock(), |i| &mut i.writer)
     }
@@ -156,6 +165,8 @@ pub fn bind(module: &mut impl magnus::Module) -> Result<(), magnus::Error> {
     let class = module.define_class("Screen", Default::default())?;
     class.define_singleton_method("new", function!(Screen::new, -1))?;
     class.define_method("alive?", method!(Screen::is_alive, 0))?;
+    class.define_method("process_events", method!(Screen::process_events, 0))?;
+    class.define_alias("update", "process_events")?;
 
     Ok(())
 }

@@ -35,29 +35,28 @@ pub async fn run(
         }
 
         let mut state = state.lock().await;
+        let State {
+            windows,
+            wgpu_state,
+        } = &mut *state;
         for event in events {
             match event {
                 Event::UserEvent(Message::ResizeWindow(width, height, window_id)) => {
-                    let window = state
-                        .windows
+                    let window = windows
                         .get_mut(&window_id)
                         .expect("window event recieved for nonexistent window");
                     window
                         .window
                         .set_inner_size(winit::dpi::PhysicalSize::new(width, height));
-                    window
-                        .pixels
-                        .resize_buffer(width, height)
-                        .expect("failed to resize pixel buffer");
-                    window
-                        .pixels
-                        .resize_surface(width, height)
-                        .expect("failed to resize window surface");
+                    wgpu_state.resize_surface(
+                        &mut window.surface,
+                        winit::dpi::PhysicalSize::new(width, height),
+                    );
+
                     window.sprites_dirty = true;
                 }
                 Event::UserEvent(Message::RepositionWindow(x, y, window_id)) => {
-                    let window = state
-                        .windows
+                    let window = windows
                         .get_mut(&window_id)
                         .expect("window event recieved for nonexistent window");
                     window
@@ -65,13 +64,13 @@ pub async fn run(
                         .set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
                 }
                 Event::UserEvent(Message::DeleteWindow(id)) => {
-                    drop(state.windows.remove(&id));
+                    drop(windows.remove(&id));
                 }
                 Event::UserEvent(Message::CreateSprite(sprite_id, window_id)) => {
-                    let window = state
-                        .windows
+                    let window = windows
                         .get_mut(&window_id)
                         .expect("window event recieved for nonexistent window");
+
                     window.sprites.insert(
                         sprite_id,
                         Sprite {
@@ -83,35 +82,31 @@ pub async fn run(
                     );
                 }
                 Event::UserEvent(Message::RemoveSprite(sprite_id, window_id)) => {
-                    let window = state
-                        .windows
+                    let window = windows
                         .get_mut(&window_id)
                         .expect("window event recieved for nonexistent window");
                     window.sprites_dirty = true;
+
                     drop(window.sprites.remove(&sprite_id));
                 }
                 Event::UserEvent(Message::SetSprite(sprite_id, window_id, path)) => {
-                    let window = state
-                        .windows
+                    let window = windows
                         .get_mut(&window_id)
                         .expect("window event recieved for nonexistent window");
                     window.sprites_dirty = true;
+
                     let sprite = window
                         .sprites
                         .get_mut(&sprite_id)
                         .expect("sprite event recieved for nonexistent sprite");
-                    sprite.image = Some(
-                        image::open(path)
-                            .expect("failed to load image")
-                            .into_rgba8(),
-                    );
+                    sprite.image = Some(wgpu_state.create_texture(path));
                 }
                 Event::UserEvent(Message::RepositionSprite(sprite_id, window_id, x, y, z)) => {
-                    let window = state
-                        .windows
+                    let window = windows
                         .get_mut(&window_id)
                         .expect("window event recieved for nonexistent window");
                     window.sprites_dirty = true;
+
                     let sprite = window
                         .sprites
                         .get_mut(&sprite_id)
@@ -122,8 +117,7 @@ pub async fn run(
                 }
 
                 Event::WindowEvent { window_id, event } => {
-                    let (id, window) = state
-                        .windows
+                    let (id, window) = windows
                         .iter_mut()
                         .find(|(_, window)| window.window.id() == window_id)
                         .expect("window event received for nonexistent window");
@@ -140,58 +134,66 @@ pub async fn run(
                             )
                             .await
                             .expect("failed to write to socket");
+                        writer
+                            .write(&[b'\n'])
+                            .await
+                            .expect("failed to write to socket");
                     }
                 }
 
                 Event::RedrawRequested(window_id) => {
-                    let (_, window) = state
-                        .windows
+                    let (_, window) = windows
                         .iter_mut()
                         .find(|(_, window)| window.window.id() == window_id)
                         .expect("window event received for nonexistent window");
+                    let output = window.surface.get_current_texture();
 
-                    if window.sprites_dirty {
-                        window
-                            .sprites
-                            .sort_unstable_by(|_, s, _, s2| s.z.cmp(&s2.z));
-                        let size = window.pixels.texture().size();
-                        let buffer = window.pixels.frame_mut();
+                    let view = output
+                        .texture
+                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    let mut encoder = wgpu_state.create_command_encoder();
 
-                        buffer.fill(0);
-                        for sprite in window.sprites.values() {
-                            if let Some(image) = &sprite.image {
-                                for (x, y, pixel) in image.enumerate_pixels() {
-                                    let x = sprite.x + x as i32;
-                                    let y = sprite.y + y as i32;
-                                    if x.is_negative()
-                                        || y.is_negative()
-                                        || x as u32 >= size.width
-                                        || y as u32 >= size.height
-                                    {
-                                        continue;
-                                    }
+                    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.05,
+                                    g: 0.0,
+                                    b: 0.1,
+                                    a: 0.7,
+                                }),
+                                store: true,
+                            },
+                        })],
+                        ..Default::default()
+                    });
 
-                                    let start_index =
-                                        ((y * size.width as i32 * 4) + (x * 4)) as usize;
+                    for sprite in window.sprites.values() {
+                        let Some(ref texture) = sprite.image else { continue; };
+                        texture.bind(&mut render_pass);
+                        wgpu_state.sprite_shader.bind(&mut render_pass);
 
-                                    buffer[start_index] = pixel[0];
-                                    buffer[start_index + 1] = pixel[1];
-                                    buffer[start_index + 2] = pixel[2];
-                                    buffer[start_index + 3] = pixel[3];
-                                }
-                            }
-                        }
-                        window.sprites_dirty = false;
+                        render_pass.draw(0..3, 0..1);
                     }
-                    window.pixels.render().expect("failed to render window");
+
+                    drop(render_pass);
+
+                    wgpu_state.submit_encoder(encoder);
+                    output.present();
                 }
                 _ => {}
             }
         }
 
-        for window in state.windows.values() {
+        for window in state.windows.values_mut() {
             if window.sprites_dirty {
+                window
+                    .sprites
+                    .sort_unstable_by(|_, s, _, s2| s.z.cmp(&s2.z));
                 window.window.request_redraw();
+                window.sprites_dirty = false;
             }
         }
     }

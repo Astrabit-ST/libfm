@@ -4,7 +4,7 @@ require 'libfm'
 
 screen = LibFM::Screen.new
 viewport = LibFM::Viewport.new(screen, visible: true, decorations: true)
-viewport.resize(800, 800)
+viewport.resize(600, 600)
 
 sprite = LibFM::Sprite.new(viewport)
 sprite.set('./examples/two_83c.png')
@@ -21,6 +21,8 @@ loop do
 
   sprite2.x = Math.sin(-t / 30.0) * 240 + 320 #+ 1280 - 640
   sprite2.y = Math.cos(-t / 30.0) * 240 + 320 #+ 720 - 24
+
+  screen.update
 
   sleep(1.0 / 60.0)
 end
